@@ -11,7 +11,7 @@ import traceback
 import time
 
 from pynntpprox import settings
-from pynntpprox.nntp import NNTPClient, ConnectionError
+from pynntpprox.nntp import NNTPClient, ConnectionError, RequestError
 
 
 logging.basicConfig(format='%(levelname)s: %(message)s')
@@ -212,11 +212,27 @@ if __name__ == '__main__':
                             try:
                                 sdata = {'RSP': 'OK',
                                          'ARG': actions[cmd](**arg)}
+                            except RequestError as e:
+                                sdata = {'RSP': 'ERR',
+                                         'ARG': {'code': e.code,
+                                                 'message': e.msg}}
+                            except ConnectionError as e:
+                                ## certainly this list will grow.
+                                ## The nntp connection has gone bad
+                                if s in inputs:
+                                    inputs.remove(s)
+                                outputs.remove(s)
+                                s.close()
+                                # Remove message queue
+                                keys = sessions[s].keys()
+                                for k in list(keys):
+                                    del sessions[s][k]
+                                del sessions[s]
+                                raise Break('PROCESS LOOP')
                             except KeyError:
                                 sdata = {'RSP': 'NO',
                                          'ARG': 'Unknown Command: %s' % cmd}
                             except Exception as e:
-                                log.exception(e)
                                 sdata = {'RSP': 'NO',
                                          'ARG': 'Unknown Error: %s' % e}
 
@@ -236,7 +252,8 @@ if __name__ == '__main__':
                                         s.send(chunk)
                                     except socket.error as e:
                                         if e.errno == 11:
-                                            ## retry send if we get temporarily unavail socket
+                                            ## retry send if we get temporarily
+                                            ## unavail socket
                                             time.sleep(0.5)
                                             continue
                                         else:

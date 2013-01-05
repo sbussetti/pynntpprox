@@ -4,6 +4,9 @@ import nntplib
 import datetime
 from collections import OrderedDict
 import traceback
+import re
+
+from .decorators import decorate_all
 
 
 logging.basicConfig(format='%(levelname)s: %(message)s')
@@ -11,11 +14,42 @@ log = logging.getLogger(__name__)
 log.setLevel('INFO')
 
 
-class ConnectionError(Exception):
+class ParsedNNTPError(Exception):
+    def __init__(self, response):
+        super(ParsedNNTPError, self).__init__(response)
+        match = re.search(r'^(\d{3}) (.*)', response)
+        if match:
+            self.code, self.msg = match.groups()
+        else:
+            self.code = None
+            self.msg = response
+
+
+class ConnectionError(ParsedNNTPError):
     pass
 
 
-    
+class RequestError(ParsedNNTPError):
+    pass
+
+
+def handle_nntp_exceptions(func):
+    def _inner(self, *args, **kwargs):
+        try:
+            return func(self, *args, **kwargs)
+        except (BrokenPipeError, nntplib.NNTPPermanentError) as e:
+            ## certainly this list will grow.
+            ## The nntp connection has gone bad
+            log.debug(traceback.format_exc())
+            raise ConnectionError(e.response)
+        except nntplib.NNTPError as e:
+            log.debug(traceback.format_exc())
+            raise RequestError(e.response)
+    return _inner
+
+NNTPMC = decorate_all(handle_nntp_exceptions)
+NNTP = NNTPMC('NNTP', (nntplib.NNTP, ), {})
+NNTP_SSL = NNTPMC('NNTP_SSL', (nntplib.NNTP_SSL, ), {})
 
 class NNTPClient(object):
     def __init__(self, config={}):
@@ -37,38 +71,24 @@ class NNTPClient(object):
         cli = None
         log.info('Connecting to NNTP server')
         if self._conf['SECURE'] == 'STARTTLS':
-            try:
-                log.debug('NNTP conn')
-                cli = nntplib.NNTP(self._conf['HOST'], usenetrc=False)
-                log.debug('starttls')
-                cli.starttls()
-                log.debug('login')
-                cli.login(user=self._conf['USER'], password=self._conf['PASS'],
-                            usenetrc=False)
-
-                return cli
-            except nntplib.NNTPError:
-                log.debug('STARTTLS failed')
-                log.debug(traceback.format_exc())
-                raise ConnectionError
-
+            ## POW MONKEYPATCH METACLASS
+            cli = NNTP(self._conf['HOST'], usenetrc=False)
+            log.debug('starttls')
+            cli.starttls()
+            log.debug('login')
+            cli.login(user=self._conf['USER'], password=self._conf['PASS'],
+                      usenetrc=False)
         elif self._conf['SECURE'] == 'SSL':
-            ## fallback
-            try:
-                log.debug('Fail to SSL on 563')
-                port = self._conf['PORT'] if self._conf['PORT'] else 563
-                cli = nntplib.NNTP_SSL(self._conf['HOST'], port=port,
-                                        user=self._conf['USER'],
-                                        password=self._conf['PASS'],
-                                        usenetrc=False)
-                return cli
-            except nntplib.NNTPPermanentError:
-                log.debug('SSL failed')
-                log.debug(traceback.format_exc())
-                raise ConnectionError
-
+            ## POW MONKEYPATCH METACLASS
+            port = self._conf['PORT'] if self._conf['PORT'] else 563
+            cli = NNTP_SSL(self._conf['HOST'], port=port,
+                                    user=self._conf['USER'],
+                                    password=self._conf['PASS'],
+                                    usenetrc=False)
         else:
             raise Exception('No insecure connections yet')
+
+        return cli
 
     def _disconnect(self):
         log.info('Disconnecting from NNTP server')
