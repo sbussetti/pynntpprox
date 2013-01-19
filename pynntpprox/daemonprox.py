@@ -70,6 +70,7 @@ if __name__ == '__main__':
     port = 1701
     backlog = 5 
     size = 1024
+    max_session_age = 30 # seconds
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM) 
     server.bind((host,port)) 
     server.listen(backlog) 
@@ -85,17 +86,24 @@ if __name__ == '__main__':
     try:
         while inputs: 
             ## check sessions
-            #skeys = list(sessions.keys())
-            #for s in skeys:
-            #    if time.time() - sessions[s]['mod'] > 3 * 60:
-            #        log.info('Session timed out: %s' % s)
-            #        # Remove message queue
-            #        keys = sessions[s].keys()
-            #        for k in list(keys):
-            #            del sessions[s][k]
-            #        del sessions[s]
+            skeys = list(sessions.keys())
+            skeys_len = len(skeys) 
+            for i, s in enumerate(skeys):
+                now = time.time()
+                delta = now - sessions[s]['mod']
+                log.info('session(%s/%s) (%s - %s) %s vs %s' % (i, skeys_len, now, sessions[s]['mod'], delta, max_session_age))
+                if delta > max_session_age:
+                    log.info('Session timed out: %s' % s)
+                    # kill session
+                    sessions[s]['nntp']._disconnect()
+                    keys = sessions[s].keys()
+                    for k in list(keys):
+                        del sessions[s][k]
+                    del sessions[s]
 
-            readsock, writesock, errorsock = select.select(inputs, outputs, inputs)
+            readsock, writesock, errorsock = select.select(inputs,
+                                                           outputs,
+                                                           inputs)
             ## Handle inputs
             for s in readsock:
                 ## accept
@@ -113,8 +121,9 @@ if __name__ == '__main__':
                                                 'nntp': nntpc,
                                                 'data': b'',
                                                 'mod': time.time()}
-                    except ConnectionError:
-                        log.info('Max NNTP sessions reached')
+                    except ConnectionError as e:
+                        log.info('Max NNTP sessions reached: [%s: %s]' \
+                                                % (e.code, e.msg))
                         connection.close()
                         continue
                         
@@ -123,36 +132,47 @@ if __name__ == '__main__':
 
                 ## read
                 else:
-
-                    ## This is vulnerable to failures "Connection reset by peer"
+                    ## This is vulnerable to failures
+                    ## "Connection reset by peer"
                     r, w, e = select.select([s], [], [], 0)
-                    data = None
-                    if r:
-                        ## This is vulnerable to failures "Connection reset by peer"
-                        data = s.recv(size)
-                    else:
-                        log.debug('Recv error')
 
-                    if data:
-                        # A readable client socket has data
-                        cliaddr = '%s:%s' % s.getpeername()
-                        log.debug('received %s bytes from %s' % (len(data), cliaddr))
-                        sessions[s]['q'].put(data)
-                        sessions[s]['mod'] = time.time()
-                        # Add output channel for response
-                        if s not in outputs:
-                            outputs.append(s)
-                    else:
-                        # Stop listening for input on the connection
+                    data = None
+                    if s not in sessions: 
                         if s in outputs:
                             outputs.remove(s)
-                        inputs.remove(s)
-                        log.debug('closing %s for inactivity' % cliaddr) 
+                        if s in inputs:
+                            inputs.remove(s)
+                        log.debug('%s session expired. closing.' % cliaddr) 
                         s.close()
-                        keys = sessions[s].keys()
-                        for k in list(keys):
-                            del sessions[s][k]
-                        del sessions[s]
+                    elif r:
+                        ## This is vulnerable to failures
+                        ## "Connection reset by peer"
+                        data = s.recv(size)
+                        if data:
+                            # A readable client socket has data
+                            cliaddr = '%s:%s' % s.getpeername()
+                            log.debug('received %s bytes from %s' % (len(data),
+                                                                     cliaddr))
+                            sessions[s]['q'].put(data)
+                            sessions[s]['mod'] = time.time()
+                            # Add output channel for response
+                            if s not in outputs:
+                                outputs.append(s)
+                        else:
+                            # Stop listening for input on the connection
+                            if s in outputs:
+                                outputs.remove(s)
+                            if s in inputs:
+                                inputs.remove(s)
+                            s.close()
+                            log.debug('closing %s for inactivity' % cliaddr) 
+                            sessions[s]['nntp']._disconnect()
+                            keys = sessions[s].keys()
+                            for k in list(keys):
+                                del sessions[s][k]
+                            del sessions[s]
+                    else:
+                        log.debug('Recv error')
 
             ## handle output
             for s in writesock:
@@ -160,11 +180,11 @@ if __name__ == '__main__':
                 if s not in outputs:
                     continue
 
-                ## succeptable to: OSError: [Errno 107] Transport endpoint is not connected
+                ## succeptable to: OSError: [Errno 107]
+                ## Transport endpoint is not connected
                 cliaddr = '%s:%s' % s.getpeername()
                 cli_data = None
                 try:
-                    ## this is echoing... and is where we'll move all the message proc
                     cli_data = sessions[s]['q'].get_nowait()
                     ## could be some, or all of a message
                 except queue.Empty:
@@ -217,6 +237,8 @@ if __name__ == '__main__':
                                          'ARG': {'code': e.code,
                                                  'message': e.msg}}
                             except ConnectionError as e:
+                                log.info('NNTP Connection error, closing '
+                                         'client connection')
                                 ## certainly this list will grow.
                                 ## The nntp connection has gone bad
                                 if s in inputs:
@@ -224,6 +246,7 @@ if __name__ == '__main__':
                                 outputs.remove(s)
                                 s.close()
                                 # Remove message queue
+                                sessions[s]['nntp']._disconnect()
                                 keys = sessions[s].keys()
                                 for k in list(keys):
                                     del sessions[s][k]
@@ -240,7 +263,8 @@ if __name__ == '__main__':
                             resp = ('%s\x00' % json.dumps(sdata))
                             resp = resp.encode('utf-8')
 
-                            log.info('(%s) SEND %s bytes' % (cliaddr, len(resp)))
+                            log.info('(%s)(%s) SEND %s bytes' \
+                                        % (cliaddr, len(sessions), len(resp)))
                             ## chunk response on agreed upon size..
                             while len(resp):
                                 ## probably not efficient..
@@ -262,12 +286,14 @@ if __name__ == '__main__':
                                                 inputs.remove(s)
                                             outputs.remove(s)
                                             s.close()
+                                            sessions[s]['nntp']._disconnect()
                                             # Remove message queue
                                             keys = sessions[s].keys()
                                             for k in list(keys):
                                                 del sessions[s][k]
                                             del sessions[s]
-                                            ## break loop even tho there is still message to send
+                                            ## break loop even tho there is
+                                            ## still message to send
                                             raise Break('PROCESS LOOP')
                                     else:
                                         # success
@@ -286,6 +312,7 @@ if __name__ == '__main__':
                     outputs.remove(s)
                 s.close()
 
+                sessions[s]['nntp']._disconnect()
                 # Remove message queue
                 keys = sessions[s].keys()
                 for k in list(keys):

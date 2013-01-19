@@ -22,7 +22,7 @@ class ParsedNNTPError(Exception):
             self.code, self.msg = match.groups()
         else:
             self.code = None
-            self.msg = response
+            self.msg = '%s: %s' % (response.__class__.__name__, response)
 
 
 class ConnectionError(ParsedNNTPError):
@@ -41,7 +41,7 @@ def handle_nntp_exceptions(func):
             ## certainly this list will grow.
             ## The nntp connection has gone bad
             log.debug(traceback.format_exc())
-            raise ConnectionError(e.response)
+            raise ConnectionError(getattr(e, 'response', e))
         except nntplib.NNTPError as e:
             log.debug(traceback.format_exc())
             raise RequestError(e.response)
@@ -57,6 +57,7 @@ class NNTPClient(object):
         self._conf = self._getconf(config)
         # client
         self._cli = None
+        self._disconnected = False
         # servertime offset
         self._timedelta = None
         # currently selected group
@@ -92,12 +93,13 @@ class NNTPClient(object):
 
     def _disconnect(self):
         log.info('Disconnecting from NNTP server')
-        if self._cli:
+        if self._cli and not self._disconnected:
             try:
                 self._cli.quit()
             except (BrokenPipeError, EOFError):
                 ## if it's dead, it's dead
                 pass
+            self._disconnected = True
 
     @property
     def cli(self):
