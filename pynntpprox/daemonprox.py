@@ -91,7 +91,8 @@ if __name__ == '__main__':
             for i, s in enumerate(skeys):
                 now = time.time()
                 delta = now - sessions[s]['mod']
-                log.info('session(%s/%s) (%s - %s) %s vs %s' % (i, skeys_len, now, sessions[s]['mod'], delta, max_session_age))
+                #log.info('session(%s/%s) (%s - %s) %s vs %s' % (i+1, skeys_len, now, sessions[s]['mod'], delta, max_session_age))
+                log.info('session(%s/%s) %s vs %s' % (i+1, skeys_len, delta, max_session_age))
                 if delta > max_session_age:
                     log.info('Session timed out: %s' % s)
                     # kill session
