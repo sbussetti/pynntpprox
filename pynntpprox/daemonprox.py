@@ -4,11 +4,14 @@
 import sys
 import socket
 import logging
-import json
 import select
 import queue
 import traceback
 import time
+try:
+    import cPickle as pickle
+except ImportError:
+    import pickle
 
 from pynntpprox import settings
 from pynntpprox.nntp import NNTPClient, ConnectionError, RequestError
@@ -17,6 +20,8 @@ from pynntpprox.nntp import NNTPClient, ConnectionError, RequestError
 logging.basicConfig(format='%(levelname)s: %(message)s')
 log = logging.getLogger(__name__)
 log.setLevel('DEBUG')
+
+DELIMITER = b"\x00~~EOM~~\x00"
 
 
 def printgroups(c):
@@ -66,7 +71,7 @@ if __name__ == '__main__':
     '''
        
 
-    host = '127.0.0.1' 
+    host = '0.0.0.0' 
     port = 1701
     backlog = 5 
     size = 1024
@@ -91,8 +96,11 @@ if __name__ == '__main__':
             for i, s in enumerate(skeys):
                 now = time.time()
                 delta = now - sessions[s]['mod']
-                #log.info('session(%s/%s) (%s - %s) %s vs %s' % (i+1, skeys_len, now, sessions[s]['mod'], delta, max_session_age))
-                log.info('session(%s/%s) %s vs %s' % (i+1, skeys_len, delta, max_session_age))
+                #log.info('session(%s/%s) (%s - %s) %s vs %s' \
+                #% (i+1, skeys_len, now, sessions[s]['mod'],
+                #           delta, max_session_age))
+                log.info('session(%s/%s) %s vs %s' \
+                            % (i+1, skeys_len, delta, max_session_age))
                 if delta > max_session_age:
                     log.info('Session timed out: %s' % s)
                     # kill session
@@ -148,7 +156,11 @@ if __name__ == '__main__':
                     elif r:
                         ## This is vulnerable to failures
                         ## "Connection reset by peer"
-                        data = s.recv(size)
+                        try:
+                            data = s.recv(size)
+                        except ConnectionResetError:
+                            data = None
+
                         if data:
                             # A readable client socket has data
                             cliaddr = '%s:%s' % s.getpeername()
@@ -200,7 +212,7 @@ if __name__ == '__main__':
                 try:
                     while 1:
                         try:
-                            eom = sessions[s]['data'].index(b"\x00")
+                            eom = sessions[s]['data'].index(DELIMITER) + len(DELIMITER)
                         except ValueError:
                             log.debug('All messages from queue serviced.')
                             raise Break('PROCESS LOOP')
@@ -213,12 +225,15 @@ if __name__ == '__main__':
                                 sessions[s]['data'] = b''
 
                             ##now we have one raw message.
-                            message = message.rstrip(b"\x00").decode('utf-8')
-                            log.debug([eom, message])
+                            ## "Bytes past the pickled object’s representation 
+                            ## are ignored [by pickle]."
+                            #message = message.rstrip(b"\x00") #.decode('utf-8')
                             if not len(message):
                                 raise Break('PROCESS LOOP')
 
-                            mdata = json.loads(message)
+                            ## blow up on decoding errors for now..
+                            #mdata = pickle.loads(message.rstrip(b"\x00"), encoding='utf8')
+                            mdata = pickle.loads(message, encoding='utf8')
                             cmd = mdata['CMD']
                             arg = mdata.get('ARG', {})
                             log.info('(%s) RECV %s' % (cliaddr, message))
@@ -261,12 +276,13 @@ if __name__ == '__main__':
                                          'ARG': 'Unknown Error: %s' % e}
 
                             ## RESPOND
-                            resp = ('%s\x00' % json.dumps(sdata))
-                            resp = resp.encode('utf-8')
+                            resp = pickle.dumps(sdata, protocol=settings.PICKLE_PROTOCOL) + DELIMITER
+                            #resp = resp.encode('utf-8')
 
                             log.info('(%s)(%s) SEND %s bytes' \
                                         % (cliaddr, len(sessions), len(resp)))
                             ## chunk response on agreed upon size..
+                            #log.debug('(%s) SEND %s' % (cliaddr, resp))
                             while len(resp):
                                 ## probably not efficient..
                                 chunk = resp[:size]

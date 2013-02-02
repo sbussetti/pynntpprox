@@ -12,3 +12,5 @@ SERVERS = {
             'RETENTION': 1577,
         }
     }
+# python 2 compat..
+PICKLE_PROTOCOL = 2

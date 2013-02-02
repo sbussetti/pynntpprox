@@ -2,7 +2,7 @@
 import logging
 import nntplib
 import datetime
-from collections import OrderedDict
+#from collections import OrderedDict
 import traceback
 import re
 
@@ -155,7 +155,7 @@ class NNTPClient(object):
         ## either way return the current group data
         if group_name is not None:
             resp, c, f, l, n = self.cli.group(group_name)
-            self._group = OrderedDict([
+            self._group = dict([
                                         ('count', c),
                                         ('first', f),
                                         ('last', l),
