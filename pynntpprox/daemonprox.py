@@ -232,7 +232,6 @@ if __name__ == '__main__':
                                 raise Break('PROCESS LOOP')
 
                             ## blow up on decoding errors for now..
-                            #mdata = pickle.loads(message.rstrip(b"\x00"), encoding='utf8')
                             mdata = pickle.loads(message, encoding='utf8')
                             cmd = mdata['CMD']
                             arg = mdata.get('ARG', {})
